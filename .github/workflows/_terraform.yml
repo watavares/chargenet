@@ -1,37 +1,30 @@
-name: terraform-dev
+# Reusable: plan (and on main, apply) one Terraform root module for one environment.
+name: _terraform
 
 on:
-  # Every PR runs, so the required "terraform" check never waits on a skipped run
-  pull_request:
-  push:
-    branches: [main]
-    paths: ["infra/**", ".github/workflows/terraform-dev.yml"]
-  schedule:
-    - cron: "0 5 * * *" # nightly drift check
-  workflow_dispatch:
-
-permissions:
-  id-token: write # OIDC token for Azure login
-  contents: read
-  pull-requests: write # post the plan as a PR comment
-
-# Never run two applies against the same state at once
-concurrency:
-  group: terraform-dev
-  cancel-in-progress: false
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub environment holding the Azure identity variables
+        required: true
+        type: string
+      working_directory:
+        required: true
+        type: string
 
 jobs:
   terraform:
     runs-on: ubuntu-latest
-    environment: dev
+    environment: ${{ inputs.environment }}
     defaults:
       run:
-        working-directory: infra/envs/dev
+        working-directory: ${{ inputs.working_directory }}
     env:
       ARM_USE_OIDC: "true"
       ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_budget_email: ${{ vars.BUDGET_EMAIL }}
       TF_IN_AUTOMATION: "true"
 
     steps:
@@ -44,7 +37,6 @@ jobs:
 
       - name: Format check
         run: terraform fmt -check -recursive
-        working-directory: infra
 
       - name: Init
         run: terraform init -input=false
@@ -64,19 +56,25 @@ jobs:
           echo "changes=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           terraform show -no-color tfplan > plan.txt
           {
-            echo '### Terraform plan (dev)'
+            echo "### Terraform plan (${{ inputs.environment }})"
             echo '```'
             cat plan.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # One comment per environment, updated in place on each push
       - name: Comment plan on PR
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
+          marker="<!-- tfplan:${{ inputs.environment }} -->"
           {
-            echo '### Terraform plan (dev)'
+            echo "$marker"
+            echo "### Terraform plan (${{ inputs.environment }})"
+            grep -E '^(Plan:|No changes)' plan.txt || true
+            echo
             echo '<details><summary>Show plan</summary>'
             echo
             echo '```'
@@ -84,13 +82,19 @@ jobs:
             echo '```'
             echo '</details>'
           } > comment.md
-          gh pr comment ${{ github.event.pull_request.number }} --body-file comment.md --edit-last --create-if-none
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+            -q ".[] | select(.body | contains(\"$marker\")) | .id" | head -n1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@comment.md > /dev/null
+          else
+            gh pr comment "$PR" --body-file comment.md
+          fi
 
-      # Someone changed dev outside Terraform: fail the nightly run so it gets noticed
+      # Someone changed resources outside Terraform: fail the nightly run so it gets noticed
       - name: Drift check
         if: github.event_name == 'schedule' && steps.plan.outputs.changes == 'true'
         run: |
-          echo "::error::Drift detected in dev: live resources differ from Terraform. See the plan in the run summary."
+          echo "::error::Drift detected in ${{ inputs.environment }}: live resources differ from Terraform. See the plan in the run summary."
           exit 1
 
       # Apply only what was just planned, and only for merges to main or manual runs

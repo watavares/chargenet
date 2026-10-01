@@ -1,0 +1,39 @@
+name: terraform
+
+on:
+  # Every PR runs, so the required checks never wait on a skipped run
+  pull_request:
+  push:
+    branches: [main]
+    paths: ["infra/**", ".github/workflows/**"]
+  schedule:
+    - cron: "0 5 * * *" # nightly drift check
+  workflow_dispatch:
+
+permissions:
+  id-token: write # OIDC token for Azure login
+  contents: read
+  pull-requests: write # post the plan as a PR comment
+
+# Applies on main queue up and never overlap; each PR gets its own lane
+concurrency:
+  group: terraform-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  # Shared foundations first: policy, budget, hub network
+  platform:
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      environment: platform
+      working_directory: infra/platform
+
+  # Then environments that build on the platform. On the nightly drift check,
+  # dev still runs even if platform reported drift.
+  dev:
+    needs: platform
+    if: ${{ !cancelled() && (needs.platform.result == 'success' || github.event_name == 'schedule') }}
+    uses: ./.github/workflows/_terraform.yml
+    with:
+      environment: dev
+      working_directory: infra/envs/dev
