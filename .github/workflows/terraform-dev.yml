@@ -1,0 +1,65 @@
+name: terraform-dev
+
+on:
+  pull_request:
+    paths: ["infra/**", ".github/workflows/terraform-dev.yml"]
+  push:
+    branches: [main]
+    paths: ["infra/**", ".github/workflows/terraform-dev.yml"]
+  workflow_dispatch:
+
+permissions:
+  id-token: write # OIDC token for Azure login
+  contents: read
+
+# Never run two applies against the same state at once
+concurrency:
+  group: terraform-dev
+  cancel-in-progress: false
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    environment: dev
+    defaults:
+      run:
+        working-directory: infra/envs/dev
+    env:
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_IN_AUTOMATION: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.16"
+          terraform_wrapper: false
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+        working-directory: infra
+
+      - name: Init
+        run: terraform init -input=false
+
+      - name: Validate
+        run: terraform validate -no-color
+
+      - name: Plan
+        run: |
+          terraform plan -input=false -no-color -out=tfplan
+          {
+            echo '### Terraform plan (dev)'
+            echo '```'
+            terraform show -no-color tfplan
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Apply only what was just planned, and only from main
+      - name: Apply
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: terraform apply -input=false -no-color tfplan
