@@ -40,7 +40,31 @@ chargenet/
 
 - **Not in the VNet, on purpose:** real chargers reach IoT Hub over the internet.
 - **Auth:** an IoT Hub shared access policy with RegistryWrite + DeviceConnect, the gateway pattern. Stations register themselves on first use.
+- **Incidents:** a station occasionally goes Faulted or Offline for the rest of an hour, like a real outage. Offline stations send nothing at all.
 - **Cost:** IoT Hub Free tier (8,000 messages/day, which caps `station_count` at 25), and Container Apps Job runtime within the monthly free grant. The image is public on GitHub Container Registry.
+
+## Telemetry and alerts
+
+```
+stations ──► IoT Hub ──► processor (every 5 min) ──► StationTelemetry_CL ──► alert rules ──► email
+                             └── checkpoints in blob storage
+```
+
+`processor/` reads new messages from IoT Hub's Event Hub-compatible endpoint, writes them to the `StationTelemetry_CL` Log Analytics table through the Logs Ingestion API, and checkpoints only after a successful write, so a failed run re-reads instead of losing messages.
+
+- **Auth:** the IoT Hub endpoint only supports keys, so the processor gets a read-only (ServiceConnect) key. Checkpoint storage (shared keys disabled) and Log Analytics use the workload's managed identity, which the platform layer vends with exactly those two data roles.
+- **Alerts** (one per station, auto-resolving, emailed to `ALERT_EMAIL`):
+  - **Station faulted:** every reading for 20 minutes says Faulted.
+  - **Station silent:** a station seen in the last day has sent nothing for 20 minutes. If the simulator or processor stops, every station goes silent, so this also catches pipeline failures.
+
+Example query:
+
+```kql
+StationTelemetry_CL
+| summarize arg_max(TimeGenerated, *) by StationId
+| project StationId, SiteId, Status, PowerKw, LastSeen = TimeGenerated
+| order by StationId asc
+```
 
 ## Getting started
 

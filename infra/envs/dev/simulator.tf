@@ -19,6 +19,7 @@ resource "azurerm_container_app_job" "simulator" {
   location                     = data.azurerm_resource_group.core.location
   resource_group_name          = data.azurerm_resource_group.core.name
   container_app_environment_id = azurerm_container_app_environment.main.id
+  workload_profile_name        = "Consumption" # Azure sets this; declaring it avoids a permanent diff
 
   replica_timeout_in_seconds = 120
   replica_retry_limit        = 0
@@ -37,7 +38,7 @@ resource "azurerm_container_app_job" "simulator" {
   template {
     container {
       name   = "simulator"
-      image  = var.simulator_image
+      image  = var.images["simulator"]
       cpu    = 0.25
       memory = "0.5Gi"
 

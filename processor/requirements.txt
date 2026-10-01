@@ -1,0 +1,4 @@
+azure-eventhub~=5.11
+azure-eventhub-checkpointstoreblob~=1.1
+azure-identity~=1.19
+azure-monitor-ingestion~=1.0
