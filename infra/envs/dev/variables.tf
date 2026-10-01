@@ -1,5 +1,5 @@
 variable "images" {
-  description = "Container images by app (simulator, processor), set by the pipeline's build job."
+  description = "Container images by app (simulator, processor, api), set by the pipeline's build job."
   type        = map(string)
 }
 

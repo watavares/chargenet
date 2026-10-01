@@ -21,6 +21,7 @@ flowchart LR
         LAW[("Log Analytics<br/>StationTelemetry_CL")]
         ALERT["Alert rules<br/>faulted / silent"]
         WB["Dashboard<br/>Azure Monitor Workbook"]
+        API["Status API<br/>Container App, HTTPS"]
         KV["Key Vault"]
     end
 
@@ -35,6 +36,7 @@ flowchart LR
     PROC <--> CKPT
     LAW --> ALERT -- "email" --> OPS(("On-call"))
     LAW --> WB
+    LAW -- "read-only" --> API -- "status page, JSON" --> WEB(("Internet"))
     HUB <-- "peering" --> SPOKE
 ```
 
@@ -50,6 +52,7 @@ The simulator deliberately runs outside the VNet: it stands in for chargers in t
 | Telemetry store | Log Analytics custom table | Every reading, queryable with KQL, 30-day retention. |
 | Alerting | Scheduled query rules + action group | One alert per station, auto-resolving: **Faulted** for 20+ minutes, or **Silent** for 20+ minutes. A silent network also means the pipeline itself has failed. |
 | Dashboard | Azure Monitor Workbook | Status tiles, station board, power and energy per site, fault history, pipeline throughput and delay. Defined in Terraform. |
+| Status API | Container App (scale to zero) | Public status page and read-only JSON (`/api/stations`, `/api/sites`, `/api/docs`). Cached for 60 s. Exposure is a recorded decision: [ADR 0001](docs/decisions/0001-public-status-api.md). |
 | Secrets | Key Vault (RBAC, network closed) | For secrets that can't be replaced by managed identity, like VPN keys and device certificates. |
 
 ## Landing zone
@@ -81,6 +84,7 @@ Least privilege throughout. Nothing authenticates with a stored password except 
 | `sp-chargenet-github-platform` | Platform pipeline | Contributor and Resource Policy Contributor on the subscription; RBAC Administrator **with a condition** that blocks granting Owner, User Access Administrator or RBAC Administrator, so it can never escalate | OIDC federation, no secret |
 | `sp-chargenet-github-dev` | Dev pipeline | Contributor on `rg-chargenet-dev` only; can't touch the network, policy or other environments | OIDC federation, no secret |
 | `id-chargenet-dev-workload` | Processor | Storage Blob Data Contributor and Monitoring Metrics Publisher on `rg-chargenet-dev` only | Managed identity, no secret |
+| `id-chargenet-dev-api` | Status API (internet-facing) | Log Analytics Reader on `rg-chargenet-dev` only; deliberately separate from the processor's write access | Managed identity, no secret |
 | IoT Hub `simulator` policy | Simulator | Register devices and connect as them (the gateway pattern); can't read or change hub configuration | Key, stored as a Container Apps secret; devices only ever send 1-hour tokens |
 | IoT Hub `processor` policy | Processor | Read device messages only | Key, stored as a Container Apps secret. IoT Hub's Event Hub endpoint doesn't support Entra ID. |
 
@@ -115,6 +119,7 @@ Each layer has its own Terraform state file and its own deploy identity, so a mi
 | Scheduled Container Apps Jobs, not always-on apps | The workload is periodic; jobs bill per second and stay inside the free grant (an always-on app would cost about €10 a month). |
 | Logs Ingestion API into a custom table | Typed, queryable data with KQL for alerts and dashboards, and no extra database to run. |
 | Deny public IPs by policy | Nothing gets exposed by accident. Public endpoints become a deliberate, reviewed exception. |
+| Built-in Container Apps ingress for the status API (dev) | €0 instead of €150–300/month for Application Gateway or Front Door. Read-only identity, caching and a replica cap bound the risk. Production would move behind Front Door Premium with Private Link. See [ADR 0001](docs/decisions/0001-public-status-api.md). |
 
 ## Cost
 
@@ -140,7 +145,8 @@ chargenet/
 │   └── envs/dev/          IoT Hub, jobs, telemetry pipeline, alerts, dashboard, Key Vault
 ├── simulator/             station simulator (Python, MQTT)
 ├── processor/             IoT Hub → Log Analytics processor (Python)
-├── docs/                  decisions and incident write-ups
+├── api/                   public status page and JSON API (Python, FastAPI)
+├── docs/decisions/        architecture decision records
 └── .github/workflows/     build, plan, apply, drift check
 ```
 
@@ -158,7 +164,7 @@ chargenet/
 
 - [x] Landing zone: policy guardrails, budget, hub-spoke network, least-privilege pipeline identities
 - [x] IoT ingestion, simulator, processor, alerts and dashboard
-- [ ] Public status API on Container Apps, exposed through a reviewed exception to the public IP policy
+- [x] Public status API on Container Apps, with the exposure decision recorded
 - [ ] Hybrid connectivity: site-to-site VPN to a simulated depot network
 - [ ] Acceptance and production environments, with approval gates on production
 - [ ] Incident write-ups: deliberate failures, detection, root cause and fix

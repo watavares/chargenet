@@ -5,7 +5,7 @@ on:
   pull_request:
   push:
     branches: [main]
-    paths: ["infra/**", "simulator/**", "processor/**", ".github/workflows/**"]
+    paths: ["infra/**", "simulator/**", "processor/**", "api/**", ".github/workflows/**"]
   schedule:
     - cron: "0 5 * * *" # nightly drift check
   workflow_dispatch:
@@ -43,7 +43,7 @@ jobs:
         run: |
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           map=""
-          for app in simulator processor; do
+          for app in simulator processor api; do
             # Syntax check that writes no .pyc files, which would change the hash below
             python -c 'import ast, sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]' "$app"/*.py
             tag=$(find "$app" -type f | sort | xargs sha256sum | sha256sum | cut -c1-12)
