@@ -3,7 +3,7 @@
 param(
     [string]$sa = "sttfstateat1234",
     [string]$rg = "rg-tfstate",
-    [string]$location = "westeurope"
+    [string]$location = "northeurope"
 )
 
 $ErrorActionPreference = "Stop"

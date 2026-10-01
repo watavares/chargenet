@@ -5,7 +5,7 @@ locals {
 
 resource "azurerm_resource_group" "core" {
   name     = "rg-chargenet-${local.env}"
-  location = "westeurope"
+  location = "northeurope"
   tags     = local.tags
 }
 
