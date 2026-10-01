@@ -57,20 +57,13 @@ resource "azurerm_log_analytics_workspace" "field" {
   tags                = merge(local.tags, { env = "field" })
 }
 
-resource "azurerm_container_app_environment" "field" {
-  name                       = "cae-chargenet-field"
-  location                   = var.location
-  resource_group_name        = azurerm_resource_group.field.name
-  log_analytics_workspace_id = azurerm_log_analytics_workspace.field.id
-  tags                       = merge(local.tags, { env = "field" })
-
-  # Azure adds this pay-per-use profile by default; declaring it avoids a permanent diff
-  workload_profile {
-    name                  = "Consumption"
-    workload_profile_type = "Consumption"
-  }
-
-  depends_on = [azurerm_resource_provider_registration.container_apps]
+# Interim: the subscription allows one Container Apps environment per region until
+# its quota is raised, and dev's holds it. The simulator runs there meanwhile;
+# once the quota allows, it gets its own environment here again
+# (cae-chargenet-field, logging to log-chargenet-field).
+data "azurerm_container_app_environment" "field" {
+  name                = "cae-chargenet-dev"
+  resource_group_name = "rg-chargenet-dev"
 }
 
 # Gateway-style credential: may register devices and connect as them, but
@@ -89,7 +82,7 @@ resource "azurerm_container_app_job" "simulator" {
   name                         = "caj-simulator"
   location                     = var.location
   resource_group_name          = azurerm_resource_group.field.name
-  container_app_environment_id = azurerm_container_app_environment.field.id
+  container_app_environment_id = data.azurerm_container_app_environment.field.id
   workload_profile_name        = "Consumption"
 
   replica_timeout_in_seconds = 120
