@@ -15,6 +15,15 @@ terraform {
 }
 
 provider "azurerm" {
-  features {}
+  features {
+    key_vault {
+      # Purging needs subscription-level rights this layer doesn't have
+      purge_soft_delete_on_destroy = false
+    }
+  }
   subscription_id = "4c952ab8-ce51-49fd-a686-de35331d97af"
+
+  # This identity only has rights on its resource group; the platform layer
+  # registers resource providers at subscription level
+  resource_provider_registrations = "none"
 }
