@@ -11,6 +11,11 @@ on:
       working_directory:
         required: true
         type: string
+      simulator_image:
+        description: Container image for the station simulator (dev only)
+        required: false
+        type: string
+        default: ""
 
 jobs:
   terraform:
@@ -25,6 +30,7 @@ jobs:
       ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       TF_VAR_budget_email: ${{ vars.BUDGET_EMAIL }}
+      TF_VAR_simulator_image: ${{ inputs.simulator_image }}
       TF_IN_AUTOMATION: "true"
 
     steps:

@@ -30,6 +30,18 @@ chargenet/
 | hub | 10.0.0.0/16 |
 | dev | 10.1.0.0/16 (`snet-apps` 10.1.0.0/23, `snet-private-endpoints` 10.1.2.0/24) |
 
+## Station simulator
+
+`simulator/` stands in for charging stations in the field. Every 5 minutes a Container Apps Job runs it, and each of 10 stations across 3 sites sends one status message to IoT Hub over MQTT (TLS, port 8883):
+
+```json
+{"stationId": "station-004", "siteId": "ams-depot", "status": "Charging", "powerKw": 312.5, "energyKwh": 26.04, "errorCode": null, "timestamp": "..."}
+```
+
+- **Not in the VNet, on purpose:** real chargers reach IoT Hub over the internet.
+- **Auth:** an IoT Hub shared access policy with RegistryWrite + DeviceConnect, the gateway pattern. Stations register themselves on first use.
+- **Cost:** IoT Hub Free tier (8,000 messages/day, which caps `station_count` at 25), and Container Apps Job runtime within the monthly free grant. The image is public on GitHub Container Registry.
+
 ## Getting started
 
 1. Run `bootstrap/bootstrap.ps1` once to create the Terraform remote state storage.
