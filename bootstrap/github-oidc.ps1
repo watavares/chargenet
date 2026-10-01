@@ -16,14 +16,16 @@ if (-not $appId) { $appId = az ad app create --display-name $appName --query app
 $spId = az ad sp list --filter "appId eq '$appId'" --query "[0].id" -o tsv
 if (-not $spId) { $spId = az ad sp create --id $appId --query id -o tsv }
 
-# Trust tokens from GitHub jobs that target this repo's environment
+# Trust tokens from GitHub jobs that target this repo's environment.
+# GitHub puts immutable owner/repo IDs in the subject, so look them up.
+$ids = gh api "repos/$repo" -q '"\(.owner.login)@\(.owner.id)/\(.name)@\(.id)"'
 $credName = "github-env-$env"
 $existing = az ad app federated-credential list --id $appId --query "[?name=='$credName'].name" -o tsv
 if (-not $existing) {
     $cred = @{
         name      = $credName
         issuer    = "https://token.actions.githubusercontent.com"
-        subject   = "repo:${repo}:environment:$env"
+        subject   = "repo:${ids}:environment:$env"
         audiences = @("api://AzureADTokenExchange")
     } | ConvertTo-Json -Compress
     $tmp = New-TemporaryFile

@@ -1,16 +1,19 @@
 name: terraform-dev
 
 on:
+  # Every PR runs, so the required "terraform" check never waits on a skipped run
   pull_request:
-    paths: ["infra/**", ".github/workflows/terraform-dev.yml"]
   push:
     branches: [main]
     paths: ["infra/**", ".github/workflows/terraform-dev.yml"]
+  schedule:
+    - cron: "0 5 * * *" # nightly drift check
   workflow_dispatch:
 
 permissions:
   id-token: write # OIDC token for Azure login
   contents: read
+  pull-requests: write # post the plan as a PR comment
 
 # Never run two applies against the same state at once
 concurrency:
@@ -49,17 +52,48 @@ jobs:
       - name: Validate
         run: terraform validate -no-color
 
+      # Exit code 0 = no changes, 2 = changes, anything else = error
       - name: Plan
+        id: plan
         run: |
-          terraform plan -input=false -no-color -out=tfplan
+          set +e
+          terraform plan -input=false -no-color -detailed-exitcode -out=tfplan
+          code=$?
+          set -e
+          [ "$code" -eq 1 ] && exit 1
+          echo "changes=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          terraform show -no-color tfplan > plan.txt
           {
             echo '### Terraform plan (dev)'
             echo '```'
-            terraform show -no-color tfplan
+            cat plan.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Apply only what was just planned, and only from main
+      - name: Comment plan on PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo '### Terraform plan (dev)'
+            echo '<details><summary>Show plan</summary>'
+            echo
+            echo '```'
+            head -c 60000 plan.txt
+            echo '```'
+            echo '</details>'
+          } > comment.md
+          gh pr comment ${{ github.event.pull_request.number }} --body-file comment.md --edit-last --create-if-none
+
+      # Someone changed dev outside Terraform: fail the nightly run so it gets noticed
+      - name: Drift check
+        if: github.event_name == 'schedule' && steps.plan.outputs.changes == 'true'
+        run: |
+          echo "::error::Drift detected in dev: live resources differ from Terraform. See the plan in the run summary."
+          exit 1
+
+      # Apply only what was just planned, and only for merges to main or manual runs
       - name: Apply
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && steps.plan.outputs.changes == 'true'
         run: terraform apply -input=false -no-color tfplan
