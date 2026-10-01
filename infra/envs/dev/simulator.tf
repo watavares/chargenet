@@ -6,6 +6,12 @@ resource "azurerm_container_app_environment" "main" {
   resource_group_name        = data.azurerm_resource_group.core.name
   log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
   tags                       = local.tags
+
+  # Azure adds this pay-per-use profile by default; declaring it avoids a permanent diff
+  workload_profile {
+    name                  = "Consumption"
+    workload_profile_type = "Consumption"
+  }
 }
 
 resource "azurerm_container_app_job" "simulator" {
