@@ -58,12 +58,14 @@ jobs:
           done
           echo "images={ ${map%, } }" >> "$GITHUB_OUTPUT"
 
-  # Shared foundations first: policy, budget, hub network
+  # Shared foundations first: policy, budget, hub network, the field (IoT Hub + simulator)
   platform:
+    needs: build
     uses: ./.github/workflows/_terraform.yml
     with:
       environment: platform
       working_directory: infra/platform
+      images: ${{ needs.build.outputs.images }}
 
   # Then environments that build on the platform. On the nightly drift check,
   # dev still runs even if platform reported drift.
