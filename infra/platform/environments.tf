@@ -25,6 +25,37 @@ resource "azurerm_role_assignment" "env_deployer" {
   principal_type       = "ServicePrincipal"
 }
 
+# Identity the environment's workloads run as (no secret: Azure issues its tokens).
+# Created here because granting it data access needs role-assignment rights
+# the environment's own deploy identity deliberately doesn't have.
+resource "azurerm_user_assigned_identity" "workload" {
+  for_each = var.environments
+
+  name                = "id-chargenet-${each.key}-workload"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.env[each.key].name
+  tags                = merge(local.tags, { env = each.key })
+}
+
+locals {
+  # Data-plane roles workloads need inside their own resource group only
+  workload_roles = {
+    for pair in setproduct(keys(var.environments), [
+      "Storage Blob Data Contributor", # processor checkpoints
+      "Monitoring Metrics Publisher",  # send rows to Log Analytics via the Logs Ingestion API
+    ]) : "${pair[0]}/${pair[1]}" => { env = pair[0], role = pair[1] }
+  }
+}
+
+resource "azurerm_role_assignment" "workload" {
+  for_each = local.workload_roles
+
+  scope                = azurerm_resource_group.env[each.value.env].id
+  role_definition_name = each.value.role
+  principal_id         = azurerm_user_assigned_identity.workload[each.value.env].principal_id
+  principal_type       = "ServicePrincipal"
+}
+
 # Network lives in its own resource group, out of reach of the environment's identity
 resource "azurerm_resource_group" "env_network" {
   for_each = var.environments
