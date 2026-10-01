@@ -4,7 +4,9 @@ param(
     [string]$env = "dev",
     [string]$repo = "watavares/chargenet",
     [string]$sa = "sttfstateat1234",
-    [string]$stateRg = "rg-tfstate"
+    [string]$stateRg = "rg-tfstate",
+    # Subscription-level roles. Platform also needs "Resource Policy Contributor".
+    [string[]]$roles = @("Contributor")
 )
 
 $appName = "sp-chargenet-github-$env"
@@ -35,8 +37,10 @@ if (-not $existing) {
 }
 
 # Deploy rights on the subscription, data access to the state container
-az role assignment create --assignee-object-id $spId --assignee-principal-type ServicePrincipal `
-  --role "Contributor" --scope "/subscriptions/$sub" | Out-Null
+foreach ($role in $roles) {
+    az role assignment create --assignee-object-id $spId --assignee-principal-type ServicePrincipal `
+      --role $role --scope "/subscriptions/$sub" | Out-Null
+}
 $saScope = az storage account show -n $sa -g $stateRg --query id -o tsv
 az role assignment create --assignee-object-id $spId --assignee-principal-type ServicePrincipal `
   --role "Storage Blob Data Contributor" --scope $saScope | Out-Null

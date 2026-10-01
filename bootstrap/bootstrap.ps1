@@ -8,7 +8,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-az group create -n $rg -l $location
+az group create -n $rg -l $location --tags project=chargenet env=platform owner=andre
 az storage account create -n $sa -g $rg -l $location `
   --sku Standard_LRS --min-tls-version TLS1_2 --allow-blob-public-access false
 
