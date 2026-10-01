@@ -57,6 +57,8 @@ stations ──► IoT Hub ──► processor (every 5 min) ──► StationTe
   - **Station faulted:** every reading for 20 minutes says Faulted.
   - **Station silent:** a station seen in the last day has sent nothing for 20 minutes. If the simulator or processor stops, every station goes silent, so this also catches pipeline failures.
 
+**Dashboard:** the `ChargeNet dev: station network` workbook (Azure portal → Monitor → Workbooks, or the `dashboard_url` Terraform output). It shows status tiles, a station board, power and energy per site, fault history, and pipeline throughput and delay. It's defined in `infra/envs/dev/dashboard.tf`, so it's versioned and reviewed like everything else.
+
 Example query:
 
 ```kql
