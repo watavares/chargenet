@@ -1,87 +1,164 @@
-# chargenet
+# ChargeNet
 
-EV charging network infrastructure.
+[![terraform](https://github.com/watavares/chargenet/actions/workflows/terraform.yml/badge.svg)](https://github.com/watavares/chargenet/actions/workflows/terraform.yml)
 
-## Layout
+A working miniature of the cloud platform behind an electric truck charging network, built on Azure with Terraform and GitHub Actions.
 
+Simulated charging stations at three depots report their status every five minutes. The platform ingests that telemetry through IoT Hub, stores it in Log Analytics, alerts when a station breaks or goes silent, and shows the network on a live dashboard. Everything is deployed through pull requests, with no portal clicks and no stored credentials.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph field["Field (internet)"]
+        SIM["Station simulator<br/>10 stations, 3 sites<br/>Container Apps Job, every 5 min"]
+    end
+
+    subgraph dev["rg-chargenet-dev"]
+        IOT["IoT Hub<br/>MQTT over TLS"]
+        PROC["Processor<br/>Container Apps Job"]
+        CKPT[("Checkpoints<br/>Blob storage")]
+        LAW[("Log Analytics<br/>StationTelemetry_CL")]
+        ALERT["Alert rules<br/>faulted / silent"]
+        WB["Dashboard<br/>Azure Monitor Workbook"]
+        KV["Key Vault"]
+    end
+
+    subgraph net["Hub-spoke network"]
+        HUB["Hub VNet 10.0.0.0/16<br/>GatewaySubnet reserved for VPN"]
+        SPOKE["Dev spoke 10.1.0.0/16<br/>NSG per subnet"]
+    end
+
+    SIM -- "status messages" --> IOT
+    IOT -- "Event Hub endpoint" --> PROC
+    PROC -- "Logs Ingestion API" --> LAW
+    PROC <--> CKPT
+    LAW --> ALERT -- "email" --> OPS(("On-call"))
+    LAW --> WB
+    HUB <-- "peering" --> SPOKE
 ```
-chargenet/
-├── bootstrap/        # one-time setup (state storage, deploy identities)
-├── infra/
-│   ├── platform/     # shared foundations: policy, budget, hub network
-│   └── envs/
-│       └── dev/      # dev environment Terraform
-├── simulator/        # charging station containers (later)
-├── docs/             # diagrams, decisions, incident write-ups
-└── README.md
-```
 
-## Platform guardrails
+The simulator deliberately runs outside the VNet: it stands in for chargers in the field, which reach IoT Hub over the internet.
 
-`infra/platform` applies to the whole subscription:
+## What's running
 
-- **Azure Policy (Deny):** resources only in `northeurope`, every resource group tagged with `project` and `env`, and no public IP addresses.
-- **Budget:** email alerts at 50%, 80% and 100% of the monthly budget, plus a forecast alert.
-- **Hub network:** `vnet-chargenet-hub` (10.0.0.0/16). Each environment's spoke VNet peers to it, and the VPN gateway goes in its `GatewaySubnet`.
-- **Environment vending:** for each entry in `var.environments`, the platform creates the environment's resource group, a spoke VNet in a separate network resource group (with an NSG per subnet, peered to the hub), and gives the environment's deploy identity Contributor on its resource group only. Environment pipelines deploy workloads but can't change the network.
+| Component | Azure service | Purpose |
+|---|---|---|
+| Station simulator | Container Apps Job | 10 stations send status, power and energy over MQTT every 5 minutes. Faults and outages persist for an hour, like real incidents; an offline station sends nothing. |
+| Ingestion | IoT Hub (Free tier) | Authenticates devices and buffers their messages. |
+| Processor | Container Apps Job | Moves new messages into Log Analytics. Checkpoints only after a successful write, so a failed run re-reads instead of losing data. |
+| Telemetry store | Log Analytics custom table | Every reading, queryable with KQL, 30-day retention. |
+| Alerting | Scheduled query rules + action group | One alert per station, auto-resolving: **Faulted** for 20+ minutes, or **Silent** for 20+ minutes. A silent network also means the pipeline itself has failed. |
+| Dashboard | Azure Monitor Workbook | Status tiles, station board, power and energy per site, fault history, pipeline throughput and delay. Defined in Terraform. |
+| Secrets | Key Vault (RBAC, network closed) | For secrets that can't be replaced by managed identity, like VPN keys and device certificates. |
+
+## Landing zone
+
+`infra/platform` owns everything shared, and applies to the whole subscription.
+
+**Guardrails (Azure Policy, Deny):**
+- Resources only in `northeurope`
+- Every resource group tagged with `project` and `env`
+- No public IP addresses
+
+**Cost control:** a monthly budget with email alerts at 50%, 80% and 100%, plus a forecast alert.
+
+**Network:** hub-spoke. The hub holds shared connectivity (the VPN gateway goes in its `GatewaySubnet`); each environment gets a spoke peered to it.
 
 | Network | Address space |
 |---|---|
-| hub | 10.0.0.0/16 |
-| dev | 10.1.0.0/16 (`snet-apps` 10.1.0.0/23, `snet-private-endpoints` 10.1.2.0/24) |
+| Hub | 10.0.0.0/16 |
+| Dev spoke | 10.1.0.0/16: `snet-apps` 10.1.0.0/23, `snet-private-endpoints` 10.1.2.0/24 |
 
-## Station simulator
+**Environment vending:** for each entry in `var.environments`, the platform creates the environment's resource group, its spoke network (in a separate resource group, with an NSG per subnet), its workload identity, and its deploy identity's permissions. Adding an environment is one map entry.
 
-`simulator/` stands in for charging stations in the field. Every 5 minutes a Container Apps Job runs it, and each of 10 stations across 3 sites sends one status message to IoT Hub over MQTT (TLS, port 8883):
+## Identity and access
 
-```json
-{"stationId": "station-004", "siteId": "ams-depot", "status": "Charging", "powerKw": 312.5, "energyKwh": 26.04, "errorCode": null, "timestamp": "..."}
+Least privilege throughout. Nothing authenticates with a stored password except where Azure offers no alternative, and those are noted.
+
+| Identity | Used by | Rights | Credential |
+|---|---|---|---|
+| `sp-chargenet-github-platform` | Platform pipeline | Contributor and Resource Policy Contributor on the subscription; RBAC Administrator **with a condition** that blocks granting Owner, User Access Administrator or RBAC Administrator, so it can never escalate | OIDC federation, no secret |
+| `sp-chargenet-github-dev` | Dev pipeline | Contributor on `rg-chargenet-dev` only; can't touch the network, policy or other environments | OIDC federation, no secret |
+| `id-chargenet-dev-workload` | Processor | Storage Blob Data Contributor and Monitoring Metrics Publisher on `rg-chargenet-dev` only | Managed identity, no secret |
+| IoT Hub `simulator` policy | Simulator | Register devices and connect as them (the gateway pattern); can't read or change hub configuration | Key, stored as a Container Apps secret; devices only ever send 1-hour tokens |
+| IoT Hub `processor` policy | Processor | Read device messages only | Key, stored as a Container Apps secret. IoT Hub's Event Hub endpoint doesn't support Entra ID. |
+
+Both pipeline identities trust only GitHub jobs from this repository running in their own GitHub environment. The checkpoint storage account has shared keys disabled entirely.
+
+## Delivery
+
+```mermaid
+flowchart LR
+    PR["Pull request"] --> CHECKS["build images<br/>plan platform<br/>plan dev"]
+    CHECKS --> COMMENT["Plans posted<br/>as PR comments"]
+    COMMENT --> MERGE["Review + merge<br/>(main is protected)"]
+    MERGE --> APPLY["Apply platform,<br/>then dev"]
+    NIGHT["Nightly"] --> DRIFT["Plan against live<br/>resources; fail on drift"]
 ```
 
-- **Not in the VNet, on purpose:** real chargers reach IoT Hub over the internet.
-- **Auth:** an IoT Hub shared access policy with RegistryWrite + DeviceConnect, the gateway pattern. Stations register themselves on first use.
-- **Incidents:** a station occasionally goes Faulted or Offline for the rest of an hour, like a real outage. Offline stations send nothing at all.
-- **Cost:** IoT Hub Free tier (8,000 messages/day, which caps `station_count` at 25), and Container Apps Job runtime within the monthly free grant. The image is public on GitHub Container Registry.
+- **Pull requests** build both container images and plan every layer. Each plan is posted as a PR comment, so reviewers see exactly what will change.
+- **Merging to `main`** applies exactly the plan that was just made, platform first. Applies never overlap.
+- **Nightly,** a plan runs against live resources and fails if anything was changed outside Terraform.
+- **`main` is protected:** every change goes through a pull request, the build and both plans must pass, and the rules apply to admins too.
+- **Images** are tagged by a hash of their source, so an app is only rebuilt and redeployed when its code changes.
 
-## Telemetry and alerts
+Each layer has its own Terraform state file and its own deploy identity, so a mistake in an environment can't damage the platform.
+
+## Design decisions
+
+| Decision | Why |
+|---|---|
+| Terraform, with `azapi` only where `azurerm` has gaps | Most widely used IaC for Azure; `azapi` covers the custom Log Analytics table schema. |
+| Platform and environments as separate layers | Mirrors a platform team vending landing zones to app teams; limits the blast radius of each pipeline. |
+| OIDC federation and managed identities | No secrets to rotate or leak. The only keys left are where Azure supports nothing else. |
+| Scheduled Container Apps Jobs, not always-on apps | The workload is periodic; jobs bill per second and stay inside the free grant (an always-on app would cost about €10 a month). |
+| Logs Ingestion API into a custom table | Typed, queryable data with KQL for alerts and dashboards, and no extra database to run. |
+| Deny public IPs by policy | Nothing gets exposed by accident. Public endpoints become a deliberate, reviewed exception. |
+
+## Cost
+
+Built to run continuously on a small budget.
+
+| Item | Monthly |
+|---|---|
+| IoT Hub Free tier (8,000 messages/day) | €0 |
+| Container Apps Jobs | €0 (within the free grant) |
+| Log Analytics ingestion | €0 (well under the free allowance) |
+| Two log alert rules | about €1–3 |
+| Storage, Key Vault, networking | cents |
+
+The budget alert is set at €20.
+
+## Repository layout
 
 ```
-stations ──► IoT Hub ──► processor (every 5 min) ──► StationTelemetry_CL ──► alert rules ──► email
-                             └── checkpoints in blob storage
+chargenet/
+├── bootstrap/             one-time setup: Terraform state storage, pipeline identities
+├── infra/
+│   ├── platform/          policy, budget, hub network, environment vending
+│   └── envs/dev/          IoT Hub, jobs, telemetry pipeline, alerts, dashboard, Key Vault
+├── simulator/             station simulator (Python, MQTT)
+├── processor/             IoT Hub → Log Analytics processor (Python)
+├── docs/                  decisions and incident write-ups
+└── .github/workflows/     build, plan, apply, drift check
 ```
 
-`processor/` reads new messages from IoT Hub's Event Hub-compatible endpoint, writes them to the `StationTelemetry_CL` Log Analytics table through the Logs Ingestion API, and checkpoints only after a successful write, so a failed run re-reads instead of losing messages.
+## Rebuilding from scratch
 
-- **Auth:** the IoT Hub endpoint only supports keys, so the processor gets a read-only (ServiceConnect) key. Checkpoint storage (shared keys disabled) and Log Analytics use the workload's managed identity, which the platform layer vends with exactly those two data roles.
-- **Alerts** (one per station, auto-resolving, emailed to `ALERT_EMAIL`):
-  - **Station faulted:** every reading for 20 minutes says Faulted.
-  - **Station silent:** a station seen in the last day has sent nothing for 20 minutes. If the simulator or processor stops, every station goes silent, so this also catches pipeline failures.
+1. Run `bootstrap/bootstrap.ps1` to create the Terraform state storage.
+2. Run `bootstrap/github-oidc.ps1` for each pipeline identity:
+   - `-env platform -roles Contributor,"Resource Policy Contributor" -allowRoleAssignments`
+   - `-env dev`
+3. Create the GitHub environments `platform` and `dev` with the variables the script prints, plus `BUDGET_EMAIL` on `platform` and `ALERT_EMAIL` on `dev`.
+4. Add the dev identity's object ID to `var.environments` in `infra/platform`.
+5. Push to `main`. The pipeline builds the images and deploys platform, then dev.
 
-**Dashboard:** the `ChargeNet dev: station network` workbook (Azure portal → Monitor → Workbooks, or the `dashboard_url` Terraform output). It shows status tiles, a station board, power and energy per site, fault history, and pipeline throughput and delay. It's defined in `infra/envs/dev/dashboard.tf`, so it's versioned and reviewed like everything else.
+## Roadmap
 
-Example query:
-
-```kql
-StationTelemetry_CL
-| summarize arg_max(TimeGenerated, *) by StationId
-| project StationId, SiteId, Status, PowerKw, LastSeen = TimeGenerated
-| order by StationId asc
-```
-
-## Getting started
-
-1. Run `bootstrap/bootstrap.ps1` once to create the Terraform remote state storage.
-2. Run `bootstrap/github-oidc.ps1` once per environment to create the identity GitHub Actions deploys with. The platform identity also needs `-roles Contributor,"Resource Policy Contributor" -allowRoleAssignments`, which grants RBAC Administrator with a condition that blocks assigning Owner, User Access Administrator or RBAC Administrator.
-3. Set the printed values as variables on the matching GitHub environment. The `platform` environment also needs `BUDGET_EMAIL`.
-
-## CI/CD
-
-`.github/workflows/terraform.yml` deploys `platform`, then `dev`, using the reusable `_terraform.yml`:
-
-- **Pull request:** format check, validate and plan for each layer. Each plan is posted as a PR comment.
-- **Merge to main:** the same steps, then applies exactly the plan it just made, platform first.
-- **Nightly:** plans against live resources and fails if anything was changed outside Terraform (drift).
-
-`main` is protected: changes go through a pull request, and both checks must pass before merging.
-
-Each layer has its own deploy identity and state file. GitHub Actions logs in to Azure with OIDC federated credentials, so no client secret is stored in GitHub or anywhere else.
+- [x] Landing zone: policy guardrails, budget, hub-spoke network, least-privilege pipeline identities
+- [x] IoT ingestion, simulator, processor, alerts and dashboard
+- [ ] Public status API on Container Apps, exposed through a reviewed exception to the public IP policy
+- [ ] Hybrid connectivity: site-to-site VPN to a simulated depot network
+- [ ] Acceptance and production environments, with approval gates on production
+- [ ] Incident write-ups: deliberate failures, detection, root cause and fix
