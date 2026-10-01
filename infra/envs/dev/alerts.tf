@@ -1,6 +1,7 @@
 # Station alerts: KQL queries over StationTelemetry_CL, evaluated every 15 minutes.
 # One alert per station (dimension on StationId); each resolves itself when the
-# station recovers.
+# station recovers. Only production pages anyone; elsewhere the rules exist but
+# are disabled (disabled rules aren't billed).
 
 resource "azurerm_monitor_action_group" "oncall" {
   name                = "ag-chargenet-${local.env}"
@@ -25,6 +26,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "station_faulted" {
   location             = data.azurerm_resource_group.core.location
   scopes               = [azurerm_log_analytics_workspace.main.id]
   severity             = 1
+  enabled              = var.alerts_enabled
   evaluation_frequency = "PT15M"
   window_duration      = "PT30M"
 
@@ -73,6 +75,7 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "station_silent" {
   location             = data.azurerm_resource_group.core.location
   scopes               = [azurerm_log_analytics_workspace.main.id]
   severity             = 2
+  enabled              = var.alerts_enabled
   evaluation_frequency = "PT15M"
   window_duration      = "P1D"
 
