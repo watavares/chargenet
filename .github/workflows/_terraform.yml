@@ -11,8 +11,8 @@ on:
       working_directory:
         required: true
         type: string
-      simulator_image:
-        description: Container image for the station simulator (dev only)
+      images:
+        description: 'Container images by app, as an HCL map: {simulator = "...", processor = "..."}'
         required: false
         type: string
         default: ""
@@ -31,7 +31,7 @@ jobs:
       ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       TF_VAR_budget_email: ${{ vars.BUDGET_EMAIL }}
       TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
-      TF_VAR_simulator_image: ${{ inputs.simulator_image }}
+      TF_VAR_images: ${{ inputs.images }}
       TF_IN_AUTOMATION: "true"
 
     steps:

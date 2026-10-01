@@ -25,10 +25,26 @@ import paho.mqtt.client as mqtt
 
 API_VERSION = "2021-04-12"
 SITES = ["ams-depot", "rtm-port", "utr-hub"]
-# Weighted so most stations are healthy and a few are busy or broken at any time
-STATUSES = ["Available", "Charging", "Faulted", "Offline"]
-WEIGHTS = [45, 45, 7, 3]
 MAX_POWER_KW = 400  # megawatt-class truck chargers run higher; 400 kW keeps numbers readable
+# Chance per station per hour of an incident that lasts the rest of that hour.
+# With 10 stations that's roughly one faulted and one offline station a day each.
+FAULT_CHANCE = 0.005
+OFFLINE_CHANCE = 0.005
+
+
+def incident(station_id: str) -> str | None:
+    """Faulted/Offline state that persists for the whole hour, like a real outage.
+
+    Seeded by station and hour, so every run within the hour agrees without
+    the simulator having to store any state.
+    """
+    hour = datetime.now(timezone.utc).strftime("%Y%m%d%H")
+    roll = random.Random(f"{station_id}:{hour}").random()
+    if roll < OFFLINE_CHANCE:
+        return "Offline"
+    if roll < OFFLINE_CHANCE + FAULT_CHANCE:
+        return "Faulted"
+    return None
 
 
 def parse_connection_string(conn: str) -> dict:
@@ -64,8 +80,8 @@ def ensure_device(host: str, key: str, policy: str, device_id: str) -> None:
             raise
 
 
-def reading(station_id: str, site: str) -> dict:
-    status = random.choices(STATUSES, WEIGHTS)[0]
+def reading(station_id: str, site: str, faulted: bool) -> dict:
+    status = "Faulted" if faulted else random.choice(["Available", "Charging"])
     power = round(random.uniform(50, MAX_POWER_KW), 1) if status == "Charging" else 0.0
     return {
         "stationId": station_id,
@@ -105,8 +121,13 @@ def main() -> None:
     for i in range(1, count + 1):
         station_id = f"station-{i:03d}"
         site = SITES[(i - 1) % len(SITES)]
+        state = incident(station_id)
+        if state == "Offline":
+            # A real offline charger sends nothing; the silent-station alert catches it
+            print(f"{station_id} offline, not reporting")
+            continue
         ensure_device(host, key, policy, station_id)
-        payload = reading(station_id, site)
+        payload = reading(station_id, site, faulted=state == "Faulted")
         send(host, key, policy, station_id, payload)
         print(json.dumps(payload))
 

@@ -5,7 +5,7 @@ on:
   pull_request:
   push:
     branches: [main]
-    paths: ["infra/**", "simulator/**", ".github/workflows/**"]
+    paths: ["infra/**", "simulator/**", "processor/**", ".github/workflows/**"]
   schedule:
     - cron: "0 5 * * *" # nightly drift check
   workflow_dispatch:
@@ -14,7 +14,7 @@ permissions:
   id-token: write # OIDC token for Azure login
   contents: read
   pull-requests: write # post the plan as a PR comment
-  packages: write # push the simulator image to GitHub Container Registry
+  packages: write # push container images to GitHub Container Registry
 
 # Applies on main queue up and never overlap; each PR gets its own lane
 concurrency:
@@ -22,48 +22,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Container image for the station simulator. Tagged by a hash of its source,
-  # so the image (and the running job) only changes when the simulator does.
+  # Container images for the apps. Each is tagged by a hash of its own source,
+  # so an image (and the job running it) only changes when that app does.
   build:
     runs-on: ubuntu-latest
     outputs:
-      image: ${{ steps.meta.outputs.image }}
+      images: ${{ steps.build.outputs.images }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Image name
-        id: meta
-        run: |
-          tag=$(echo "${{ hashFiles('simulator/**') }}" | cut -c1-12)
-          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/chargenet-simulator:$tag" >> "$GITHUB_OUTPUT"
-
-      - name: Lint
-        run: python -m py_compile simulator/simulator.py
-
-      - name: Check if image exists
-        id: exists
-        run: |
-          if docker manifest inspect "${{ steps.meta.outputs.image }}" > /dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: docker/login-action@v3
-        if: github.ref == 'refs/heads/main' && steps.exists.outputs.exists == 'false'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      # PRs build to prove the image works; only main pushes it
-      - uses: docker/build-push-action@v6
-        if: steps.exists.outputs.exists == 'false'
-        with:
-          context: simulator
-          push: ${{ github.ref == 'refs/heads/main' }}
-          tags: ${{ steps.meta.outputs.image }}
-          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+      # PRs build to prove the images work; only main pushes them
+      - name: Build
+        id: build
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          map=""
+          for app in simulator processor; do
+            # Syntax check that writes no .pyc files, which would change the hash below
+            python -c 'import ast, sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]' "$app"/*.py
+            tag=$(find "$app" -type f | sort | xargs sha256sum | sha256sum | cut -c1-12)
+            image="ghcr.io/$owner/chargenet-$app:$tag"
+            if docker manifest inspect "$image" > /dev/null 2>&1; then
+              echo "$image already exists"
+            else
+              docker build --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" -t "$image" "$app"
+              if [ "$GITHUB_REF" = "refs/heads/main" ]; then docker push "$image"; fi
+            fi
+            map="$map$app = \"$image\", "
+          done
+          echo "images={ ${map%, } }" >> "$GITHUB_OUTPUT"
 
   # Shared foundations first: policy, budget, hub network
   platform:
@@ -81,4 +74,4 @@ jobs:
     with:
       environment: dev
       working_directory: infra/envs/dev
-      simulator_image: ${{ needs.build.outputs.image }}
+      images: ${{ needs.build.outputs.images }}
