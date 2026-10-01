@@ -56,6 +56,26 @@ resource "azurerm_role_assignment" "workload" {
   principal_type       = "ServicePrincipal"
 }
 
+# The public status API gets its own identity, read-only. It's internet-facing,
+# so it must not share the processor's write access.
+resource "azurerm_user_assigned_identity" "api" {
+  for_each = var.environments
+
+  name                = "id-chargenet-${each.key}-api"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.env[each.key].name
+  tags                = merge(local.tags, { env = each.key })
+}
+
+resource "azurerm_role_assignment" "api" {
+  for_each = var.environments
+
+  scope                = azurerm_resource_group.env[each.key].id
+  role_definition_name = "Log Analytics Reader"
+  principal_id         = azurerm_user_assigned_identity.api[each.key].principal_id
+  principal_type       = "ServicePrincipal"
+}
+
 # Network lives in its own resource group, out of reach of the environment's identity
 resource "azurerm_resource_group" "env_network" {
   for_each = var.environments
