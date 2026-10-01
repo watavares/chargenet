@@ -10,6 +10,9 @@ resource "azurerm_iothub" "main" {
     capacity = 1
   }
 
+  # Free tier only allows 2 partitions (the provider defaults to 4)
+  event_hub_partition_count = 2
+
   tags = local.tags
 }
 
