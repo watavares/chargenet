@@ -1,9 +1,9 @@
 output "status_url" {
   description = "Public status page."
-  value       = "https://${azurerm_container_app.api.ingress[0].fqdn}"
+  value       = module.environment.status_url
 }
 
 output "dashboard_url" {
   description = "Station network workbook in the Azure portal."
-  value       = "https://portal.azure.com/#@${data.azurerm_client_config.current.tenant_id}/resource${azurerm_application_insights_workbook.stations.id}/workbook"
+  value       = module.environment.dashboard_url
 }
