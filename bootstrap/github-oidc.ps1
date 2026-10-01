@@ -6,7 +6,9 @@ param(
     [string]$sa = "sttfstateat1234",
     [string]$stateRg = "rg-tfstate",
     # Subscription-level roles. Platform also needs "Resource Policy Contributor".
-    [string[]]$roles = @("Contributor")
+    [string[]]$roles = @("Contributor"),
+    # Platform only: may assign roles to environment identities, but never privileged ones
+    [switch]$allowRoleAssignments
 )
 
 $appName = "sp-chargenet-github-$env"
@@ -41,6 +43,16 @@ foreach ($role in $roles) {
     az role assignment create --assignee-object-id $spId --assignee-principal-type ServicePrincipal `
       --role $role --scope "/subscriptions/$sub" | Out-Null
 }
+if ($allowRoleAssignments) {
+    # Owner, User Access Administrator, RBAC Administrator: can't be granted or removed,
+    # so this identity can never escalate itself or anyone else to admin
+    $privileged = "8e3af657-a8ff-443c-a75c-2fe8c4bcb635, 18d7d88d-d35e-4fb5-a5c3-7773c20a72d9, f58310d9-a9f6-439a-9e8d-f62e7b41a168"
+    $condition = "((!(ActionMatches{'Microsoft.Authorization/roleAssignments/write'})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAllValues:GuidNotEquals {$privileged})) AND ((!(ActionMatches{'Microsoft.Authorization/roleAssignments/delete'})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAllValues:GuidNotEquals {$privileged}))"
+    az role assignment create --assignee-object-id $spId --assignee-principal-type ServicePrincipal `
+      --role "Role Based Access Control Administrator" --scope "/subscriptions/$sub" `
+      --condition $condition --condition-version "2.0" | Out-Null
+}
+
 $saScope = az storage account show -n $sa -g $stateRg --query id -o tsv
 az role assignment create --assignee-object-id $spId --assignee-principal-type ServicePrincipal `
   --role "Storage Blob Data Contributor" --scope $saScope | Out-Null

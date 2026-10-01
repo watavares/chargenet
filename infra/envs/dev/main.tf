@@ -3,17 +3,48 @@ locals {
   tags = { project = "chargenet", env = local.env, owner = "andre" }
 }
 
-resource "azurerm_resource_group" "core" {
-  name     = "rg-chargenet-${local.env}"
-  location = "northeurope"
-  tags     = local.tags
+data "azurerm_client_config" "current" {}
+
+# The resource group is vended by infra/platform; this layer deploys into it
+data "azurerm_resource_group" "core" {
+  name = "rg-chargenet-${local.env}"
+}
+
+# Hand ownership of the resource group to the platform layer without deleting it
+removed {
+  from = azurerm_resource_group.core
+  lifecycle {
+    destroy = false
+  }
 }
 
 resource "azurerm_log_analytics_workspace" "main" {
   name                = "log-chargenet-${local.env}"
-  location            = azurerm_resource_group.core.location
-  resource_group_name = azurerm_resource_group.core.name
+  location            = data.azurerm_resource_group.core.location
+  resource_group_name = data.azurerm_resource_group.core.name
   sku                 = "PerGB2018"
   retention_in_days   = 30
   tags                = local.tags
+}
+
+# Secrets that can't be replaced by managed identity or OIDC (VPN keys, device certs).
+# Access is by Azure RBAC, not vault access policies. Network access is closed until
+# a private endpoint is added; the control plane (this resource) is unaffected.
+resource "azurerm_key_vault" "main" {
+  name                = "kv-chargenet-${local.env}-${substr(data.azurerm_client_config.current.subscription_id, 0, 4)}"
+  location            = data.azurerm_resource_group.core.location
+  resource_group_name = data.azurerm_resource_group.core.name
+  tenant_id           = data.azurerm_client_config.current.tenant_id
+  sku_name            = "standard"
+
+  rbac_authorization_enabled = true
+  soft_delete_retention_days = 7
+  purge_protection_enabled   = false # dev is torn down and rebuilt; prod turns this on
+
+  network_acls {
+    default_action = "Deny"
+    bypass         = "AzureServices"
+  }
+
+  tags = local.tags
 }
