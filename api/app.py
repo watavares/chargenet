@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from azure.identity import ManagedIdentityCredential
 from azure.monitor.query import LogsQueryClient, LogsQueryStatus
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 CACHE_SECONDS = 60
@@ -56,6 +57,16 @@ QUERIES = {
 }
 
 app = FastAPI(title="ChargeNet status API", docs_url="/api/docs", redoc_url=None)
+
+# Let watavares.com (and its preview hosts) read the live figures from the browser.
+# Read-only GETs, no credentials.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://watavares.com", "https://www.watavares.com", "https://watavares.github.io"],
+    allow_origin_regex=r"https://[a-z0-9-]+(\.[a-z0-9-]+)*\.azurestaticapps\.net",
+    allow_methods=["GET"],
+    allow_credentials=False,
+)
 client = LogsQueryClient(ManagedIdentityCredential(client_id=os.environ["AZURE_CLIENT_ID"]))
 workspace_id = os.environ["WORKSPACE_ID"]
 
